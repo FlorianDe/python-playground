@@ -2,7 +2,7 @@ from collections import namedtuple
 from dataclasses import dataclass, field
 import sys
 import math
-from typing import Literal
+from typing import Literal, get_args
 import torch
 import numpy as np
 import numpy.typing as npt
@@ -44,6 +44,8 @@ class Rectangle:
 
 
 class CircleCloud:
+    Explosion_Type = Literal["clamp", "ray_cast"]
+
     def __init__(self, vertices_amount: int, radius: float, offset: npt.NDArray) -> None:
         if vertices_amount <= 4:
             raise ValueError("The vertices amount has to be equal or greater than four.")
@@ -70,27 +72,25 @@ class CircleCloud:
             ]
         )
 
+    def _safe_div(self, n: float, d: float, default: float = float("inf")):
+        return n / d if d else default
+
     def _ray_cast_explosion(self, rect: Rectangle, factor: float, max_d: float) -> npt.NDArray:
         point_scale = [1.0] * self.vertices.shape[0]
 
         scale = self._lerp(1, max_d, factor)
         for idx, p in enumerate(self.vertices):
-            a_x_min = (rect.boundaries.min.x - circle.offset[0]) / (p[0] - circle.offset[0])
-            a_x_max = (rect.boundaries.max.x - circle.offset[0]) / (p[0] - circle.offset[0])
-            a_y_min = (rect.boundaries.min.y - circle.offset[1]) / (p[1] - circle.offset[1])
-            a_y_max = (rect.boundaries.max.y - circle.offset[1]) / (p[1] - circle.offset[1])
+            a_x_min = self._safe_div((rect.boundaries.min.x - self.offset[0]), (p[0] - self.offset[0]))
+            a_x_max = self._safe_div((rect.boundaries.max.x - self.offset[0]), (p[0] - self.offset[0]))
+            a_y_min = self._safe_div((rect.boundaries.min.y - self.offset[1]), (p[1] - self.offset[1]))
+            a_y_max = self._safe_div((rect.boundaries.max.y - self.offset[1]), (p[1] - self.offset[1]))
 
-            min_a = min(
-                [alpha for alpha in [a_x_min, a_x_max, a_y_min, a_y_max] if not (alpha < 0 or math.isinf(alpha))]
-            )
-
-            point_scale[idx] = min(min_a, scale)
+            min_alpha = min([alpha for alpha in [a_x_min, a_x_max, a_y_min, a_y_max] if alpha >= 0])
+            point_scale[idx] = min(min_alpha, scale)
 
         return (self.vertices - self.offset) * np.array(point_scale)[:, np.newaxis] + self.offset  # type: ignore
 
-    def explode(
-        self, rect: Rectangle, factor: float, explosion_type: Literal["clamp", "ray_cast"] = "ray_cast"
-    ) -> npt.NDArray:
+    def explode(self, rect: Rectangle, factor: float, explosion_type: Explosion_Type = "ray_cast") -> npt.NDArray:
         rect_size = 0.5 * np.array([rect.width, rect.height])
         abs_origin = np.absolute(self.offset - rect.offset)  # type: ignore
         circle_inside_rect_bounds = np.all((abs_origin + self.radius) <= rect_size)
@@ -108,15 +108,11 @@ class CircleCloud:
 if __name__ == "__main__":
     print_versions()
 
-    vertices_amount = 48
-    radius = 1
+    vertices_amount = 100
+    radius = 2
 
-    rect = Rectangle(8 * radius, 4 * radius, np.array([1.0, 0.0]))
-    circle = CircleCloud(vertices_amount, radius, np.array([-1, -1]))
-    start = timer()
-    rect_verts = circle.explode(rect, 0.9, "clamp")
-    end = timer()
-    print(f"Time to compute ray casts is {end - start}s")
+    rect = Rectangle(10 * radius, 5 * radius, np.array([2.0, 0.0]))
+    circle = CircleCloud(vertices_amount, radius, np.array([-3, -2]))
     fig, ax = plt.subplots()
 
     # Set bottom and left spines as x and y axes of coordinate system
@@ -135,8 +131,15 @@ if __name__ == "__main__":
     arrow_fmt = dict(markersize=4, color="black", clip_on=False)
     ax.plot((1), (0), marker=">", transform=ax.get_yaxis_transform(), **arrow_fmt)
     ax.plot((0), (1), marker="^", transform=ax.get_xaxis_transform(), **arrow_fmt)
-    ax.scatter(circle.vertices[:, 0], circle.vertices[:, 1])
-    ax.scatter(rect_verts[:, 0], rect_verts[:, 1])
+    ax.scatter(circle.vertices[:, 0], circle.vertices[:, 1], s=20)
+
+    for method in get_args(CircleCloud.Explosion_Type):
+        start = timer()
+        exploded_verts = circle.explode(rect, 1, method)
+        end = timer()
+        print(f"Time to compute {method} took {end - start}s")
+        ax.scatter(exploded_verts[:, 0], exploded_verts[:, 1], s=20)
+
     ax.add_patch(
         patches.Rectangle(
             rect.offset - np.array([rect.width / 2, rect.height / 2]),  # type: ignore
